@@ -2,16 +2,26 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import geopandas as gpd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import torch
 import torch.nn as nn
 import joblib
 import json
-import os
 import datetime
 import warnings
+from pathlib import Path
+
+from live_weather import (
+    apply_live_weather,
+    build_weather_calibration,
+    fetch_live_weekly_weather,
+)
+
+try:
+    import geopandas as gpd
+except ImportError:
+    gpd = None
 warnings.filterwarnings("ignore")
 
 # Set seeds for reproducibility
@@ -71,10 +81,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── CONSTANTS ─────────────────────────────────────────────────────
-BASE_DIR   = "/content/drive/MyDrive/Cholera_EWS/"
-MODELS_DIR = BASE_DIR + "models/"
-DATA_DIR   = BASE_DIR + "data/processed/"
-SHAPES_DIR = BASE_DIR + "data/shapefiles/"
+BASE_DIR = Path(__file__).resolve().parents[1]
+MODELS_DIR = BASE_DIR / "models"
+DATA_DIR = BASE_DIR / "data" / "processed"
+SHAPES_DIR = BASE_DIR / "data" / "shapefiles"
 LOOKBACK_WEEKS = 12
 
 MONTH_NAMES = {
@@ -149,9 +159,7 @@ def month_to_weeks(year, month):
 def week_to_date_range(year, week):
     """Convert year+week to start and end date strings"""
     try:
-        start = datetime.datetime.strptime(
-            f"{year}-W{week:02d}-1", "%Y-W%W-%w"
-        ).date()
+        start = datetime.date.fromisocalendar(year, week, 1)
         end = start + datetime.timedelta(days=6)
         return (
             start.strftime("%d %b %Y"),
@@ -164,9 +172,7 @@ def is_future_week(year, week):
     """Check if a week is in the future"""
     today = datetime.date.today()
     try:
-        week_start = datetime.datetime.strptime(
-            f"{year}-W{week:02d}-1", "%Y-W%W-%w"
-        ).date()
+        week_start = datetime.date.fromisocalendar(year, week, 1)
         return week_start > today
     except:
         return False
@@ -177,7 +183,7 @@ def load_models():
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "cpu"
     )
-    with open(DATA_DIR + "feature_config.json") as f:
+    with (DATA_DIR / "feature_config.json").open(encoding="utf-8") as f:
         feature_config = json.load(f)
 
     lstm_model = CholeraLSTM(
@@ -187,25 +193,21 @@ def load_models():
         dropout     = 0.2
     ).to(device)
     lstm_model.load_state_dict(torch.load(
-        MODELS_DIR + "lstm_final_model.pt",
+        MODELS_DIR / "lstm_final_model.pt",
         map_location=device
     ))
     lstm_model.eval()
 
-    rf_model       = joblib.load(MODELS_DIR + "rf_spatial_model.pkl")
-    target_scaler  = joblib.load(MODELS_DIR + "target_scaler.pkl")
-    temporal_scaler= joblib.load(MODELS_DIR + "temporal_scaler.pkl")
-    spatial_scaler = joblib.load(MODELS_DIR + "spatial_scaler.pkl")
+    rf_model = joblib.load(MODELS_DIR / "rf_spatial_model.pkl")
+    target_scaler = joblib.load(MODELS_DIR / "target_scaler.pkl")
 
-    with open(MODELS_DIR + "fusion_config.json") as f:
+    with (MODELS_DIR / "fusion_config.json").open(encoding="utf-8") as f:
         fusion_config = json.load(f)
 
     return {
         "lstm"            : lstm_model,
         "rf"              : rf_model,
         "target_scaler"   : target_scaler,
-        "temporal_scaler" : temporal_scaler,
-        "spatial_scaler"  : spatial_scaler,
         "feature_config"  : feature_config,
         "fusion_config"   : fusion_config,
         "device"          : device
@@ -214,26 +216,43 @@ def load_models():
 @st.cache_data
 def load_data():
     master = pd.read_csv(
-        DATA_DIR + "engineered_dataset.csv"
+        DATA_DIR / "engineered_dataset.csv"
     )
     master["date"] = pd.to_datetime(master["date"])
     master = master.sort_values(
         ["lga", "year", "epi_week"]
     ).reset_index(drop=True)
-    risk_scores = pd.read_csv(
-        DATA_DIR + "lga_risk_scores.csv"
-    )
-    socio = pd.read_csv(
-        DATA_DIR + "socioeconomic_data.csv"
-    )
-    try:
-        gdf = gpd.read_file(SHAPES_DIR + "ondo_lgas.shp")
-    except:
+    risk_path = DATA_DIR / "lga_risk_scores.csv"
+    socio_path = DATA_DIR / "socioeconomic_data.csv"
+    risk_scores = pd.read_csv(risk_path) if risk_path.exists() else pd.DataFrame()
+    socio = pd.read_csv(socio_path) if socio_path.exists() else pd.DataFrame()
+
+    shape_path = SHAPES_DIR / "ondo_lgas.shp"
+    if gpd is not None and shape_path.exists():
+        gdf = gpd.read_file(shape_path)
+    else:
         gdf = None
     return master, risk_scores, socio, gdf
 
+
+@st.cache_data(ttl="1h", max_entries=2)
+def load_live_weather_data():
+    """Cache the external API response to avoid calls on every widget rerun."""
+    if gpd is None:
+        raise RuntimeError("GeoPandas is required to locate the 18 LGAs")
+    shape_path = SHAPES_DIR / "ondo_lgas.shp"
+    boundaries = gpd.read_file(shape_path)
+    return fetch_live_weekly_weather(boundaries)
+
 # ── PREDICTION FUNCTION ───────────────────────────────────────────
-def predict_week(year, epi_week, models, master):
+def predict_week(
+    year,
+    epi_week,
+    models,
+    master,
+    live_weather=None,
+    weather_calibration=None,
+):
     device         = models["device"]
     lstm_model     = models["lstm"]
     rf_model       = models["rf"]
@@ -261,6 +280,15 @@ def predict_week(year, epi_week, models, master):
         if len(lga_filtered) < LOOKBACK_WEEKS:
             lga_filtered = lga_data.tail(LOOKBACK_WEEKS)
 
+        live_weeks_used = 0
+        if live_weather is not None and weather_calibration is not None:
+            lga_filtered, live_weeks_used = apply_live_weather(
+                lga_filtered,
+                lga,
+                live_weather,
+                weather_calibration,
+            )
+
         sequence = lga_filtered[TEMPORAL_FEAT].values
 
         if len(sequence) < LOOKBACK_WEEKS:
@@ -270,9 +298,13 @@ def predict_week(year, epi_week, models, master):
             ))
             sequence = np.vstack([pad, sequence])
 
-        X_tensor = torch.FloatTensor(
-            sequence.reshape(1, LOOKBACK_WEEKS, -1)
-        ).to(device)
+        # The engineered dataset already contains model-ready transformed
+        # temporal values. Scaling them again would distort the inputs.
+        X_tensor = torch.tensor(
+            sequence.reshape(1, LOOKBACK_WEEKS, -1),
+            dtype=torch.float32,
+            device=device,
+        )
 
         with torch.no_grad():
             lstm_pred_scaled = lstm_model(X_tensor)
@@ -306,7 +338,8 @@ def predict_week(year, epi_week, models, master):
             "risk_level"      : risk_level,
             "risk_score"      : round(
                 min(final_pred / 10.0, 1.0), 3
-            )
+            ),
+            "live_weather_weeks": live_weeks_used,
         })
 
     return pd.DataFrame(predictions).sort_values(
@@ -415,6 +448,8 @@ with st.spinner("Loading models..."):
         # ---------- ADD THESE TWO LINES ----------
         LAST_DATA_YEAR = int(master["year"].max())
         LAST_DATA_WEEK = int(master[master["year"] == LAST_DATA_YEAR]["epi_week"].max())
+        LAST_DATA_DATE = master["date"].max().date()
+        LAST_DATA_SOURCE = str(master.loc[master["date"].idxmax(), "data_source"])
         # -----------------------------------------
         st.success("✅ Models loaded successfully!")
     except Exception as e:
@@ -424,6 +459,41 @@ with st.spinner("Loading models..."):
 # ── SIDEBAR ───────────────────────────────────────────────────────
 st.sidebar.title("⚙️ Control Panel")
 st.sidebar.markdown("---")
+
+use_live_weather = st.sidebar.toggle(
+    "Use live Open-Meteo weather",
+    value=True,
+    help=(
+        "Uses recent observations and forecasts from Open-Meteo, converts "
+        "them to epidemiological weeks, and maps them to the model's saved "
+        "feature scale. Falls back to the bundled snapshot if unavailable."
+    ),
+)
+
+live_weather = None
+weather_calibration = None
+live_fetched_at = None
+if use_live_weather:
+    try:
+        live_weather, live_fetched_at = load_live_weather_data()
+        raw_master = pd.read_csv(DATA_DIR / "master_dataset.csv")
+        weather_calibration = build_weather_calibration(raw_master, master)
+        minimum_r2 = min(values[2] for values in weather_calibration.values())
+        if minimum_r2 < 0.98:
+            raise ValueError("Weather feature calibration quality is too low")
+        st.sidebar.success("Live Open-Meteo weather connected")
+        st.sidebar.caption(f"Fetched at {live_fetched_at} UTC")
+    except Exception as error:
+        st.sidebar.warning(
+            "Live weather is unavailable; using the bundled snapshot. "
+            f"Reason: {error}"
+        )
+
+weather_mode_label = (
+    "Live Open-Meteo + bundled model features"
+    if live_weather is not None
+    else "Bundled snapshot fallback"
+)
 
 # Get available years from dataset
 available_years = sorted(
@@ -460,6 +530,14 @@ selected_month = [
 
 # Get weeks for selected month
 month_weeks = month_to_weeks(selected_year, selected_month)
+current_iso_week = today.isocalendar().week
+default_week_index = 0
+if (
+    selected_year == today.year
+    and selected_month == today.month
+    and current_iso_week in month_weeks
+):
+    default_week_index = month_weeks.index(current_iso_week)
 
 # Let user pick specific week within month
 selected_week = st.sidebar.selectbox(
@@ -469,7 +547,8 @@ selected_week = st.sidebar.selectbox(
         f"Week {w} "
         f"({week_to_date_range(selected_year, w)[0]} – "
         f"{week_to_date_range(selected_year, w)[1]})"
-    )
+    ),
+    index = default_week_index,
 )
 
 # Show selected date range
@@ -493,9 +572,9 @@ if is_future:
     </div>
     """, unsafe_allow_html=True)
     st.sidebar.info(
-        "This is a forward prediction using "
-        "NASA real-time climate data and "
-        "learned seasonal patterns."
+        "Recent rainfall, temperature, and humidity are retrieved from "
+        "Open-Meteo when available and converted to the model feature "
+        "scale. The bundled dataset remains the fallback."
     )
 else:
     st.sidebar.info(
@@ -521,6 +600,12 @@ st.sidebar.info(f"""
 **Period**: 2018-2026\n
 **Records**: {len(master):,}\n
 **Features**: 42
+
+**Latest observation**: {LAST_DATA_DATE:%d %b %Y}
+
+**Source label**: {LAST_DATA_SOURCE}
+
+**Weather mode**: {weather_mode_label}
 """)
 
 # ── GENERATE PREDICTIONS ──────────────────────────────────────────
@@ -532,7 +617,25 @@ with st.spinner(
     f"Week {selected_week}..."
 ):
     predictions = predict_week(
-        selected_year, selected_week, models, master
+        selected_year,
+        selected_week,
+        models,
+        master,
+        live_weather=live_weather,
+        weather_calibration=weather_calibration,
+    )
+
+live_lga_count = int((predictions["live_weather_weeks"] > 0).sum())
+if live_lga_count:
+    st.success(
+        f"Live Open-Meteo inputs were used for {live_lga_count} of 18 LGAs. "
+        "Daily API values were aggregated to epidemiological weeks and "
+        "converted to the model's training feature scale."
+    )
+elif use_live_weather:
+    st.info(
+        "No API weeks overlap this selected model window; predictions use "
+        "the bundled historical feature snapshot."
     )
 
 # ── FUTURE WARNING BANNER ─────────────────────────────────────────
@@ -545,12 +648,12 @@ if beyond_real_data:
     st.warning(
         f"⚠️ **No real climate data available yet** for "
         f"{selected_month_name} {selected_year} (Week {selected_week}). "
-        f"The last real NASA climate data point is "
+        f"The last bundled climate observation is "
         f"**Year {LAST_DATA_YEAR}, Week {LAST_DATA_WEEK}** "
         f"({week_to_date_range(LAST_DATA_YEAR, LAST_DATA_WEEK)[0]}). "
-        f"This prediction reuses that last known data and is "
-        f"**not a genuine forecast** — re-run the NASA data extension "
-        f"cell to fetch newer climate data before trusting this result."
+        f"Open-Meteo supplies overlapping recent weather weeks when the "
+        f"live toggle is connected; older non-weather features still come "
+        f"from the bundled model-ready sequence."
     )
 elif is_future:
     st.info(
@@ -558,9 +661,10 @@ elif is_future:
         f"Showing forecasted cholera risk for "
         f"**{selected_month_name} {selected_year}** "
         f"(Week {selected_week}: {start_date} to {end_date}). "
-        f"Based on real NASA climate data up to "
+        f"Based on bundled NASA-derived climate observations up to "
         f"Year {LAST_DATA_YEAR} Week {LAST_DATA_WEEK}, "
-        f"projected forward using learned seasonal patterns."
+        f"projected forward using learned seasonal patterns. Current "
+        f"weather inputs use Open-Meteo when connected."
     )
 
 # ── HEADER ROW ────────────────────────────────────────────────────
@@ -596,8 +700,13 @@ with left:
     if gdf is not None:
         fig_map = create_risk_map(predictions, gdf)
         if fig_map:
-            st.pyplot(fig_map, use_container_width=False)   # prevent full-width expansion
+            st.pyplot(fig_map, width="content")
             plt.close()
+    else:
+        st.info(
+            "The optional Ondo LGA shapefile was not included in the supplied "
+            "archive. Predictions, alerts, tables, and trends remain available."
+        )
 
 with right:
     st.subheader("🚨 Risk Alerts")
@@ -656,8 +765,8 @@ def color_risk(val):
     return colors.get(val, "")
 
 st.dataframe(
-    display_df.style.applymap(color_risk, subset=["Risk Level"]),
-    use_container_width=True,
+    display_df.style.map(color_risk, subset=["Risk Level"]),
+    width="stretch",
     height=500
 )
 
@@ -770,7 +879,7 @@ with st.spinner("Generating monthly preview..."):
 
 preview_df = pd.DataFrame(preview_data)
 preview_df.index = range(1, 13)
-st.dataframe(preview_df, use_container_width=True)
+st.dataframe(preview_df, width="stretch")
 
 st.markdown("---")
 

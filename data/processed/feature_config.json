@@ -1,0 +1,39 @@
+{
+  "temporal": [
+    "rainfall_weekly",
+    "temp_mean",
+    "humidity_mean",
+    "confirmed_cases_lag1",
+    "confirmed_cases_lag2",
+    "confirmed_cases_lag3",
+    "confirmed_cases_lag4",
+    "rainfall_weekly_lag1",
+    "rainfall_weekly_lag2",
+    "rainfall_weekly_lag3",
+    "rainfall_weekly_lag4",
+    "temp_mean_lag1",
+    "temp_mean_lag2",
+    "temp_mean_lag4",
+    "humidity_mean_lag1",
+    "humidity_mean_lag2",
+    "confirmed_cases_roll4",
+    "confirmed_cases_roll4_sum",
+    "rainfall_weekly_roll4",
+    "rainfall_weekly_roll4_sum",
+    "month",
+    "is_rainy_season",
+    "week_sin",
+    "week_cos"
+  ],
+  "spatial": [
+    "pop_density",
+    "water_access",
+    "sanitation_access",
+    "open_defecation",
+    "mpi",
+    "elevation_m",
+    "dist_coast_km",
+    "dist_river_km"
+  ],
+  "note": "Temporal feature order inferred from the supplied 24-input LSTM and engineered dataset; original feature_config.json was absent from the archive."
+}

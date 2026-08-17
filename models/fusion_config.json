@@ -1,1 +1,1 @@
-{"method": "Multiplicative", "optimal_alpha": 0.1, "final_mae": 0.5891261463358528, "final_rmse": 0.9230771093463584, "final_r2": 0.7729101092234052}
+{"method": "Multiplicative", "optimal_alpha": 0.1, "final_mae": 0.5706701800993512, "final_rmse": 0.9102024598824379, "final_r2": 0.7792006205778934}
