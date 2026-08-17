@@ -1,4 +1,5 @@
 .venv/
+dashboard_startup.log
 __pycache__/
 *.py[cod]
 .streamlit/secrets.toml
