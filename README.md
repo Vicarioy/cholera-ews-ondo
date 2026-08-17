@@ -5,7 +5,7 @@ This is the consolidated review and deployment package. It combines the repaired
 Final Year Project — Department of Computer Science, Federal University of Technology, Akure.
 
 **Authors:** Oluwagbenga Victor Daniel (CSC/20/4873) and Popoola Moses Eniola (CSC/20/4881)  
-**Supervisor:** Dr. I. T. Jimoh
+**Supervisor:** Dr. S.A Adeleye
 
 ## Saved model performance metadata
 
