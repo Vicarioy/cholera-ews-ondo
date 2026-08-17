@@ -1,16 +1,16 @@
 # Independent supervisor review guide
 
-Your supervisor can inspect and run this project without you being present.
+You can inspect and run this project independently, without the student being present.
 
 ## A. Fastest review on Windows
 
-1. Extract the ZIP completely; do not run files from inside the ZIP preview.
-2. Open the extracted project folder.
-3. Install 64-bit Python 3.13 if needed.
+1. Clone the GitHub repository, or extract the ZIP completely; do not run files from inside the ZIP preview.
+2. Open the project folder containing `requirements.txt`.
+3. Install 64-bit Python 3.13 if needed and select **Add Python to PATH** during installation.
 4. Double-click `setup_windows.bat` and wait for `SETUP COMPLETE`.
-5. Double-click `run_dashboard.bat`.
-6. Visit `http://localhost:8501`.
-7. Stop the application with `Ctrl+C` in the terminal.
+5. Double-click `run_dashboard.bat` and leave its console window open.
+6. The launcher opens `http://localhost:8501`; enter that address manually if the browser does not open.
+7. Stop the application with `Ctrl+C` in the launcher window.
 
 No Google Drive, Colab mount, API key, or database is required.
 
@@ -27,7 +27,7 @@ Open `dashboard/app.py` in VS Code and inspect these sections:
 7. **`create_risk_map()`** — joins LGA predictions to the shapefile and renders the risk map.
 8. **Main dashboard** — filters, metrics, alerts, tables, historical trends, and preview.
 
-## C. Files the supervisor should verify
+## C. Files that should be verified
 
 - `models/lstm_final_model.pt`
 - `models/rf_spatial_model.pkl`
@@ -59,7 +59,7 @@ The expected application signals are:
 
 ## E. What can and cannot be supervised
 
-The supervisor can review:
+The following can be reviewed:
 
 - Dashboard source code
 - Model architecture used for inference
@@ -68,7 +68,7 @@ The supervisor can review:
 - Saved evaluation metadata and figures
 - Local and cloud execution
 
-The supervisor cannot fully reproduce:
+The following cannot be fully reproduced from this repository:
 
 - Raw-data acquisition
 - Original feature-engineering execution
@@ -77,13 +77,36 @@ The supervisor cannot fully reproduce:
 
 Those require the original training notebook/scripts and raw-data sources, which were not included in either supplied ZIP.
 
-## F. Weather-data interpretation
+## F. Launcher troubleshooting
+
+If `run_dashboard.bat` closes or localhost does not open:
+
+1. Confirm that the repository was fully cloned or extracted and that `run_dashboard.bat`, `setup_windows.bat`, and `requirements.txt` are in the same folder.
+2. Run `setup_windows.bat` again and confirm that it ends with `SETUP COMPLETE`.
+3. Open PowerShell in the project folder and run:
+
+```powershell
+.\run_dashboard.bat
+```
+
+4. Read `dashboard_startup.log` in the project folder. The improved launcher records missing-environment and Streamlit startup errors there and pauses instead of silently disappearing.
+5. If port 8501 is already occupied, stop the other Streamlit window with `Ctrl+C`, then launch again.
+6. Verify the installation directly:
+
+```powershell
+.\.venv\Scripts\python.exe verify_project.py
+.\.venv\Scripts\python.exe -m streamlit run dashboard\app.py --server.address localhost --server.port 8501
+```
+
+Do not run `run_dashboard.bat` directly from GitHub's web page or from inside a ZIP preview.
+
+## G. Weather-data interpretation
 
 `dashboard/live_weather.py` calls Open-Meteo without an API key. It retrieves recent/forecast daily rainfall, mean temperature, and mean humidity for representative points inside all 18 LGA polygons, aggregates the values into epidemiological weeks, and transforms them to the saved model scale. `dashboard/app.py` overlays matching API weeks on the 12-week LSTM sequence. If the API fails, the dashboard visibly falls back to the bundled feature snapshot.
 
 The live API does not provide cholera case surveillance or socioeconomic attributes. Those inputs remain from the bundled validated dataset. This separation prevents raw weather values from being inserted directly into a model trained on transformed features.
 
-## G. Interpreting an all-Low screen
+## H. Interpreting an all-Low screen
 
 Risk classification is performed separately for every LGA:
 
