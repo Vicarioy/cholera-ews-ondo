@@ -1,6 +1,5 @@
-
-*.pt
-*.csv
+.venv/
 __pycache__/
-*.pyc
-.ipynb_checkpoints/
+*.py[cod]
+.streamlit/secrets.toml
+.DS_Store
